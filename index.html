@@ -4,7 +4,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 <style>
-html,body{margin:0;height:100%;background:#111;color:#eee;font-family:ui-monospace,Menlo,Consolas,monospace;overscroll-behavior:none}
+html,body{margin:0;height:100%;touch-action:manipulation;-webkit-text-size-adjust:100%;text-size-adjust:100%;background:#111;color:#eee;font-family:ui-monospace,Menlo,Consolas,monospace;overscroll-behavior:none}
 body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:100dvh;
   padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);box-sizing:border-box;
   -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
@@ -121,16 +121,25 @@ body.m-vs #botBtn{display:none}
 body.touch #dbgBtn{display:block}
 /* phone sideways: canvas fills the screen, controls float over its bottom corners */
 @media (orientation:landscape){
-  body.touch canvas{width:min(100vw,calc(100dvh*16/9 - 6px));border:none}
+  body.touch canvas{width:min(calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right)),calc(100dvh*16/9 - 6px));border:none}
   body.touch #pad{position:absolute;left:0;right:0;bottom:0;padding:0 max(14px,env(safe-area-inset-left)) 10px}
   body.touch .btn,body.touch #dpad{opacity:.75}
   body.touch #dpad{width:130px;height:130px} body.touch .btn{width:62px;height:62px} body.touch #jumpBtn{width:68px;height:68px}
+}
+/* squarer screens held sideways (iPhone Duo / foldables opened, iPads): there's room, so put the controls UNDER the game */
+@media (orientation:landscape) and (max-aspect-ratio:3/2){
+  body.touch{justify-content:flex-start;padding-top:max(8px,env(safe-area-inset-top))}
+  body.touch #wrap{width:100%;flex:1}
+  body.touch canvas{width:min(calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right)),calc((100dvh - 190px)*16/9))}
+  body.touch #pad{position:static;flex:1;align-items:center;padding:10px max(20px,env(safe-area-inset-left)) max(10px,env(safe-area-inset-bottom))}
+  body.touch .btn,body.touch #dpad{opacity:1}
+  body.touch #dpad{width:150px;height:150px} body.touch .btn{width:70px;height:70px} body.touch #jumpBtn{width:76px;height:76px}
 }
 /* phone upright: controls go under the game */
 @media (orientation:portrait){
   body.touch{justify-content:flex-start;padding-top:max(12px,env(safe-area-inset-top))}
   body.touch #wrap{width:100%;flex:1}
-  body.touch canvas{width:100vw;border-left:none;border-right:none}
+  body.touch canvas{width:min(100vw,calc((100dvh - 300px)*16/9));border-left:none;border-right:none}
   body.touch #pad{flex:1;align-items:center;padding:24px 10px}
   body.touch .btn{width:64px;height:64px}
   body.touch #jumpBtn{width:72px;height:72px}
@@ -138,6 +147,12 @@ body.touch #dbgBtn{display:block}
   body.touch .grp{gap:8px}
   body.touch .rot{display:block}
   body.touch #tools{position:static;transform:none;justify-content:center;margin:10px 0 0}
+}
+/* very narrow phones */
+@media (orientation:portrait) and (max-width:380px){
+  body.touch .btn{width:56px;height:56px} body.touch #jumpBtn{width:62px;height:62px}
+  body.touch #dashBtn{width:48px!important;height:48px!important} body.touch #fntBtn{width:44px!important;height:44px!important}
+  body.touch #pad{padding:20px 6px} body.touch #rbtns{gap:6px 6px}
 }
 .rot{display:none;font-size:11px;opacity:.5;text-align:center;margin-top:8px}
 </style></head><body>
@@ -427,7 +442,20 @@ toolBtn('sndBtn',()=>toggleMute());
 toolBtn('lvlBtn',()=>cycleLevel());
 toolBtn('ultBtn',()=>{keys.Ult_p=true;});
 document.addEventListener('contextmenu',e=>e.preventDefault());
-document.addEventListener('gesturestart',e=>e.preventDefault());
+// ---- no zooming on phones: block double-tap zoom, pinch zoom and iOS gesture zoom everywhere ----
+['gesturestart','gesturechange','gestureend'].forEach(t=>document.addEventListener(t,e=>e.preventDefault(),{passive:false}));
+document.addEventListener('touchmove',e=>{ if(e.touches.length>1||(e.scale!==undefined&&e.scale!==1)) e.preventDefault(); },{passive:false});
+document.addEventListener('dblclick',e=>e.preventDefault(),{passive:false});
+let lastTapEnd=0;
+document.addEventListener('touchend',e=>{
+  const now=performance.now(), t=e.target;
+  // a 2nd tap within 350ms would zoom on older iOS. Swallow it, but keep typing in boxes working and still "click" menu buttons.
+  if(now-lastTapEnd<350&&!(t.closest&&t.closest('input,textarea'))){ e.preventDefault(); if(t.closest&&t.closest('#menu,#tools')&&t.click) t.click(); }
+  lastTapEnd=now;
+},{passive:false});
+// if the page somehow got zoomed (or the phone was folded/unfolded/rotated), snap the layout back
+function fixZoom(){ if(window.visualViewport&&visualViewport.scale>1.01) window.scrollTo(0,0); }
+addEventListener('resize',fixZoom); addEventListener('orientationchange',()=>setTimeout(fixZoom,300));
 addEventListener('blur',()=>{for(const k in keys)keys[k]=false;});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)for(const k in keys)keys[k]=false;});
 
