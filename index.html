@@ -70,9 +70,13 @@ body.touch #pad{display:flex;justify-content:space-between;align-items:flex-end;
 #menu .cards{display:flex;flex-wrap:wrap;align-items:stretch;gap:.45em;justify-content:center;max-width:min(100%,46em)}
 #menu .card.rand{display:none}
 #menu .px.online{background:#2a63d6}
+#menu .px.guest{background:#3a8a3a}
+#scrGate .note{max-width:34em;line-height:1.6}
 #menu .px.sm{font-size:.6em;padding:.4em .6em;display:inline-flex;vertical-align:middle;margin-left:.4em}
 #acctBar{font-size:.65em;min-height:1.6em;display:flex;flex-direction:column;align-items:center;gap:.4em}
 #acctBar b{color:#ffd23c;font-weight:normal}
+#acctBar .line{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.3em}
+#acctBar .px.sm{margin-left:.2em}
 #menu .note{font-size:.5em;color:#9fd0ff;opacity:.85}
 #menu .err{font-size:.55em;color:#ff7a6a;min-height:1.2em;max-width:36em;line-height:1.5}
 #menu input{font-family:'Press Start 2P',ui-monospace,monospace;font-size:.85em;padding:.6em .8em;width:16em;max-width:80%;background:#14142a;color:#fff;border:2px solid #000;
@@ -140,7 +144,15 @@ body.touch #dbgBtn{display:block}
 <div id="wrap">
 <canvas id="c" width="384" height="216"></canvas>
 <div id="menu">
-  <div class="scr on" id="scrHome">
+  <div class="scr" id="scrGate">
+    <div class="title"><span class="t1">STUFF</span><span class="t2">FIGHTERS</span></div>
+    <div class="sub">WELCOME! HOW DO YOU WANT TO PLAY?</div>
+    <button class="px big sel" data-act="login" tabindex="-1">👤 LOG IN / SIGN UP</button>
+    <button class="px big guest" data-act="guest" tabindex="-1">🎮 PLAY AS GUEST</button>
+    <div class="note">ACCOUNTS SAVE YOUR WINS + PUT YOU ON THE LEADERBOARD. GUESTS CAN PLAY EVERYTHING, BUT NOTHING IS SAVED.</div>
+    <div class="err" id="gateErr"></div>
+  </div>
+  <div class="scr" id="scrHome">
     <div class="title"><span class="t1">STUFF</span><span class="t2">FIGHTERS</span></div>
     <div class="sub">EVERYDAY STUFF. EVERYDAY BEEF.</div>
     <div id="acctBar"></div>
@@ -339,7 +351,7 @@ cv.addEventListener('mousedown',e=>{if(document.body.classList.contains('touch')
 addEventListener('keydown',e=>{
   if(['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code))e.preventDefault();
   audioInit();
-  if(e.target&&e.target.tagName==='INPUT'){ if(e.code==='Enter') menuAct(document.getElementById('scrLogin').dataset.def||'login'); return; }
+  if(e.target&&e.target.tagName==='INPUT'){ if(e.code==='Enter') menuAct(document.getElementById('scrLogin').dataset.def||'login'); if(e.code==='Escape'){ e.target.blur(); menuAct('home'); } return; }
   if(isMenu()){ e.preventDefault(); if(!e.repeat) menuKey(e); if(e.code==='KeyM'&&!e.repeat)toggleMute(); if(e.code==='KeyN'&&!e.repeat){cycleLevel();paintSelect();} return; }
   if(e.code==='Escape'&&!e.repeat){ if(NET.on) netLeave(true); setMode('menu'); return; }
   if(!keys[e.code])keys[e.code+'_p']=true;keys[e.code]=true;
@@ -1750,8 +1762,8 @@ renderButtons();
 // Leave them empty and the game runs in LOCAL TEST MODE: accounts are saved on this device,
 // and two browser tabs on the same computer can find each other and fight "online".
 const ONLINE_CONFIG={
-  SUPABASE_URL:'',        // e.g. 'https://abcdefghijkl.supabase.co'
-  SUPABASE_ANON_KEY:''    // the "anon public" key from Project Settings → API
+  SUPABASE_URL:'https://fvnblriauudxvvdpsiyv.supabase.co',
+  SUPABASE_ANON_KEY:'sb_publishable_Ndgs4VKOd7DWBvi6m_zTug_bxFhBQTT'   // publishable key: safe to be public (the database rules protect the data)
 };
 const NET={on:false,linking:false,host:false,matchId:'',oppName:'',oppChar:'',myChar:'',snap:null,lastSnapAt:0,sendT:0,
   helloT:0,gotHello:false,started:false,applying:false,wasOnline:false,roundSent:false,leftReason:''};
@@ -1772,11 +1784,17 @@ async function loadSupabase(){
   await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
     s.onload=res; s.onerror=()=>rej(new Error("Couldn't load Supabase (are you offline?)")); document.head.appendChild(s); });
 }
+function guestName(){ return 'Guest'+Math.floor(1000+Math.random()*9000); }
+function becomeGuest(){
+  let n=null; try{ n=sessionStorage.getItem('sf_guest'); }catch(_){}
+  if(!n){ n=guestName(); try{ sessionStorage.setItem('sf_guest',n); }catch(_){} }
+  Acct.user={id:'guest-'+n.toLowerCase()+'-'+rid(),name:n,wins:0,losses:0,guest:true};
+}
 async function initOnline(){
   if(!ONLINE_CONFIG.SUPABASE_URL||!ONLINE_CONFIG.SUPABASE_ANON_KEY){
     Acct.mode='local';
     try{ const n=sessionStorage.getItem('sf_user'); const a=LocalDB.all()[ (n||'').toLowerCase() ]; if(a) Acct.user={id:'local-'+a.name.toLowerCase(),name:a.name,wins:a.wins,losses:a.losses}; }catch(_){}
-    renderAccount(); return;
+    afterInit(); return;
   }
   Acct.mode='supabase';
   try{
@@ -1785,7 +1803,14 @@ async function initOnline(){
     const {data:{session}}=await supa.auth.getSession();
     if(session) await loadProfile(session.user.id);
   }catch(e){ Acct.error=e.message; }
+  afterInit();
+}
+// the gate: if you're already logged in (or chose guest this session) go straight in, otherwise pick
+function afterInit(){
+  if(!Acct.user){ let g=null; try{ g=sessionStorage.getItem('sf_guest'); }catch(_){} if(g) becomeGuest(); }
   renderAccount();
+  if(Acct.error) document.getElementById('gateErr').textContent=Acct.error;
+  if(mode==='gate'&&Acct.user) setMode('menu');
 }
 async function loadProfile(id){
   const {data,error}=await supa.from('profiles').select('*').eq('id',id).maybeSingle();
@@ -1794,6 +1819,7 @@ async function loadProfile(id){
 }
 const fakeEmail=n=>n.toLowerCase()+'@players.stuff-fighters.game';
 async function signUp(name,pw){
+  if(Acct.mode==='supabase'&&!supa) throw new Error("Can't reach the account server right now. Try reloading, or play as a guest.");
   name=cleanName(name);
   if(name.length<3) throw new Error('Name must be 3-12 letters/numbers');
   if((pw||'').length<6) throw new Error('Password must be at least 6 characters');
@@ -1802,7 +1828,7 @@ async function signUp(name,pw){
     LocalDB.put(name.toLowerCase(),{name,pw:LocalDB.hash(pw),wins:0,losses:0});
     sessionStorage.setItem('sf_user',name); Acct.user={id:'local-'+name.toLowerCase(),name,wins:0,losses:0}; return;
   }
-  const taken=await supa.from('profiles').select('id').ilike('username',name).maybeSingle();
+  const taken=await supa.from('profiles').select('id').ilike('username',name.replace(/_/g,'\\_')).limit(1).maybeSingle();
   if(taken.data) throw new Error('That name is taken');
   const {data,error}=await supa.auth.signUp({email:fakeEmail(name),password:pw});
   if(error) throw new Error(error.message.includes('registered')?'That name is taken':error.message);
@@ -1812,6 +1838,7 @@ async function signUp(name,pw){
   Acct.user={id:data.user.id,name,wins:0,losses:0};
 }
 async function logIn(name,pw){
+  if(Acct.mode==='supabase'&&!supa) throw new Error("Can't reach the account server right now. Try reloading, or play as a guest.");
   name=cleanName(name);
   if(Acct.mode==='local'){
     const a=LocalDB.all()[name.toLowerCase()];
@@ -1824,11 +1851,14 @@ async function logIn(name,pw){
   if(!Acct.user) throw new Error('No profile found for that account');
 }
 async function logOut(){
-  if(Acct.mode==='local') sessionStorage.removeItem('sf_user'); else if(supa) await supa.auth.signOut();
-  Acct.user=null; renderAccount();
+  const was=Acct.user;
+  if(was&&was.guest){ try{ sessionStorage.removeItem('sf_guest'); }catch(_){} }
+  else if(Acct.mode==='local') sessionStorage.removeItem('sf_user'); else if(supa) await supa.auth.signOut();
+  Acct.user=null; renderAccount(); setMode('gate');
 }
 async function recordResult(won){
   const u=Acct.user; if(!u) return;
+  if(u.guest){ if(won) u.wins++; else u.losses++; return; }      // guests: counted this session only, never saved
   if(won) u.wins++; else u.losses++;
   if(Acct.mode==='local'){ const k=u.name.toLowerCase(), r=LocalDB.all()[k]; if(r){ r.wins=u.wins; r.losses=u.losses; LocalDB.put(k,r);} return; }
   try{ await supa.from('profiles').update({wins:u.wins,losses:u.losses}).eq('id',u.id); }catch(_){}
@@ -1846,8 +1876,9 @@ async function loadBoard(){
 function renderAccount(){
   const el=document.getElementById('acctBar'); if(!el) return;
   const local=Acct.mode==='local';
-  el.innerHTML=(Acct.user?`👤 <b>${Acct.user.name}</b> · ${Acct.user.wins}W ${Acct.user.losses}L <button class="px sm" data-act="logout" tabindex="-1">LOG OUT</button>`
-                         :`<button class="px sm" data-act="login" tabindex="-1">👤 LOG IN / SIGN UP</button>`)
+  el.innerHTML='<div class="line">'+(Acct.user&&Acct.user.guest?`🎮 <b>${Acct.user.name}</b> · GUEST (NOT SAVED) <button class="px sm" data-act="login" tabindex="-1">👤 MAKE ACCOUNT</button> <button class="px sm" data-act="logout" tabindex="-1">EXIT</button>`
+              :Acct.user?`👤 <b>${Acct.user.name}</b> · ${Acct.user.wins}W ${Acct.user.losses}L <button class="px sm" data-act="logout" tabindex="-1">LOG OUT</button>`
+                         :`<button class="px sm" data-act="login" tabindex="-1">👤 LOG IN / SIGN UP</button>`)+'</div>'
               +(local?'<div class="note">LOCAL TEST MODE · accounts saved on this device · open 2 tabs to test online</div>':'')
               +(Acct.error?'<div class="err">'+Acct.error+'</div>':'');
 }
@@ -1914,6 +1945,7 @@ setInterval(()=>{ if(document.hidden&&(NET.on||NET.linking)) netTick(0.05); },50
 
 function startSearch(){
   if(!Acct.user){ NET.afterLogin='online'; setMode('login'); return; }
+  if(Acct.mode==='supabase'&&!supa){ Acct.error="Online play can't connect right now (Supabase didn't load). Try reloading."; setMode('menu'); renderAccount(); return; }
   setMode('search');
   document.getElementById('searchMsg').textContent='SEARCHING FOR AN OPPONENT';
   document.getElementById('searchCount').textContent='';
@@ -2030,13 +2062,14 @@ let oppChar='dog', oppChoice='random', selStep='you';   // selStep: 'you' (pick 
 let mode='menu', nextMode='vs', pickChar='mailman', wins={p:0,b:0}, roundNo=1, intro=0, menuT=0, roundDone=false;
 const menuEl=document.getElementById('menu');
 function show(id){ for(const s of menuEl.querySelectorAll('.scr')) s.classList.toggle('on',s.id===id); }
-function isMenu(){ return mode==='menu'||mode==='select'||mode==='result'||mode==='login'||mode==='search'||mode==='board'; }
+function isMenu(){ return mode==='gate'||mode==='menu'||mode==='select'||mode==='result'||mode==='login'||mode==='search'||mode==='board'; }
 function setMode(m){
   mode=m; const inMenu=isMenu();
   document.body.classList.toggle('m-menu',inMenu); document.body.classList.toggle('m-vs',m==='vs'); document.body.classList.toggle('m-train',m==='training');
   menuEl.style.display=inMenu?'flex':'none';
   if(inMenu) Music.start(); else Music.stop();
-  if(m==='menu'){ show('scrHome'); navIdx=0; paintNav(); }
+  if(m==='menu'){ if(!Acct.user){ m=mode='gate'; } else { show('scrHome'); navIdx=0; paintNav(); } }
+  if(m==='gate'){ show('scrGate'); navIdx=0; paintNav(); }
   if(m==='select'){ show('scrSelect'); paintSelect(); }
   if(m==='result') show('scrResult');
   if(m==='login'){ show('scrLogin'); document.getElementById('loginErr').textContent=''; }
@@ -2123,7 +2156,7 @@ function menuLoop(dt){
 }
 // ---- menu input (mouse, touch, keyboard)
 let navIdx=0;
-const homeBtns=()=>[...menuEl.querySelectorAll('#scrHome > .px')];
+const homeBtns=()=>[...menuEl.querySelectorAll(mode==='gate'?'#scrGate > .px':'#scrHome > .px')];
 function paintNav(){ homeBtns().forEach((b,i)=>b.classList.toggle('sel',i===navIdx)); }
 (function buildCards(){
   const box=document.getElementById('cards');
@@ -2154,6 +2187,7 @@ function menuAct(a){
   audioInit(); SFX.blip();
   if(a==='vs'||a==='training'){ NET.wasOnline=false; nextMode=a; selStep='you'; setMode('select'); }
   else if(a==='online'){ nextMode='online'; selStep='you'; if(!Acct.user){ NET.afterLogin='online'; setMode('login'); } else setMode('select'); }
+  else if(a==='guest'){ becomeGuest(); renderAccount(); SFX.ultReady(); setMode('menu'); }
   else if(a==='login'){ NET.afterLogin=null; setMode('login'); setTimeout(()=>document.getElementById('inName').focus(),50); }
   else if(a==='logout'){ logOut(); }
   else if(a==='board'){ setMode('board'); }
@@ -2161,7 +2195,7 @@ function menuAct(a){
   else if(a==='doLogin'||a==='doSignup'){
     const nm=document.getElementById('inName').value, pw=document.getElementById('inPw').value, err=document.getElementById('loginErr');
     err.textContent='...';
-    (a==='doLogin'?logIn(nm,pw):signUp(nm,pw)).then(()=>{ err.textContent=''; document.getElementById('inPw').value=''; renderAccount(); SFX.ultReady();
+    (a==='doLogin'?logIn(nm,pw):signUp(nm,pw)).then(()=>{ err.textContent=''; try{ sessionStorage.removeItem('sf_guest'); }catch(_){} document.getElementById('inPw').value=''; renderAccount(); SFX.ultReady();
         if(NET.afterLogin==='online'){ NET.afterLogin=null; nextMode='online'; selStep='you'; setMode('select'); } else setMode('menu'); })
       .catch(e=>{ err.textContent=e.message; SFX.deny(); });
   }
@@ -2183,7 +2217,7 @@ menuEl.addEventListener('click',e=>{
 menuEl.addEventListener('mousedown',e=>{ if(e.target.tagName!=='INPUT') e.preventDefault(); });
 function menuKey(e){
   const c=e.code;
-  if(mode==='menu'){
+  if(mode==='menu'||mode==='gate'){
     const n=homeBtns().length;
     if(c==='ArrowUp'||c==='KeyW'){navIdx=(navIdx+n-1)%n;paintNav();SFX.blip();}
     if(c==='ArrowDown'||c==='KeyS'){navIdx=(navIdx+1)%n;paintNav();SFX.blip();}
@@ -2327,7 +2361,7 @@ function loop(now){
   updateDebugPanel(dt);
   requestAnimationFrame(loop);
 }
-setMode('menu');
+setMode('gate');
 initOnline();
 requestAnimationFrame(loop);
 </script></body></html>
