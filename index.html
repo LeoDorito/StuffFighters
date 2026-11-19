@@ -1800,8 +1800,9 @@ async function initOnline(){
   try{
     await loadSupabase();
     supa=window.supabase.createClient(ONLINE_CONFIG.SUPABASE_URL,ONLINE_CONFIG.SUPABASE_ANON_KEY);
-    const {data:{session}}=await supa.auth.getSession();
-    if(session) await loadProfile(session.user.id);
+    const tok=getTok();
+    if(tok){ const r=await supa.rpc('whoami',{p_token:tok}); if(r.error) throw r.error;
+      if(r.data) setUser(r.data); else setTok(null); }
   }catch(e){ Acct.error=e.message; }
   afterInit();
 }
@@ -1812,12 +1813,17 @@ function afterInit(){
   if(Acct.error) document.getElementById('gateErr').textContent=Acct.error;
   if(mode==='gate'&&Acct.user) setMode('menu');
 }
-async function loadProfile(id){
-  const {data,error}=await supa.from('profiles').select('*').eq('id',id).maybeSingle();
-  if(error) throw error;
-  if(data) Acct.user={id,name:data.username,wins:data.wins,losses:data.losses};
-}
-const fakeEmail=n=>n.toLowerCase()+'@players.stuff-fighters.game';
+// online accounts: just a username + password (no email). The server hashes passwords and hands back a login token.
+function getTok(){ try{ return localStorage.getItem('sf_token'); }catch(_){ return null; } }
+function setTok(t){ try{ t?localStorage.setItem('sf_token',t):localStorage.removeItem('sf_token'); }catch(_){} }
+function setUser(d){ Acct.user={id:'p-'+d.username.toLowerCase()+'-'+rid(),name:d.username,wins:d.wins,losses:d.losses}; }
+function rpcErr(e){ const m=(e&&e.message)||'';
+  if(m.includes('NAME_TAKEN')) return 'That name is taken';
+  if(m.includes('BAD_LOGIN')) return 'Wrong name or password';
+  if(m.includes('BAD_NAME')) return 'Name must be 3-12 letters/numbers';
+  if(m.includes('BAD_PASSWORD')) return 'Password must be 6-72 characters';
+  if(/fetch|network/i.test(m)) return "Can't reach the account server right now";
+  return m||'Something went wrong'; }
 async function signUp(name,pw){
   if(Acct.mode==='supabase'&&!supa) throw new Error("Can't reach the account server right now. Try reloading, or play as a guest.");
   name=cleanName(name);
@@ -1828,14 +1834,9 @@ async function signUp(name,pw){
     LocalDB.put(name.toLowerCase(),{name,pw:LocalDB.hash(pw),wins:0,losses:0});
     sessionStorage.setItem('sf_user',name); Acct.user={id:'local-'+name.toLowerCase(),name,wins:0,losses:0}; return;
   }
-  const taken=await supa.from('profiles').select('id').ilike('username',name.replace(/_/g,'\\_')).limit(1).maybeSingle();
-  if(taken.data) throw new Error('That name is taken');
-  const {data,error}=await supa.auth.signUp({email:fakeEmail(name),password:pw});
-  if(error) throw new Error(error.message.includes('registered')?'That name is taken':error.message);
-  if(!data.session) throw new Error('Turn OFF "Confirm email" in Supabase (Authentication → Sign In / Providers → Email)');
-  const ins=await supa.from('profiles').insert({id:data.user.id,username:name});
-  if(ins.error) throw new Error(ins.error.message.includes('duplicate')?'That name is taken':ins.error.message);
-  Acct.user={id:data.user.id,name,wins:0,losses:0};
+  const {data,error}=await supa.rpc('sign_up',{p_username:name,p_password:pw});
+  if(error) throw new Error(rpcErr(error));
+  setTok(data.token); setUser(data);
 }
 async function logIn(name,pw){
   if(Acct.mode==='supabase'&&!supa) throw new Error("Can't reach the account server right now. Try reloading, or play as a guest.");
@@ -1845,15 +1846,14 @@ async function logIn(name,pw){
     if(!a||a.pw!==LocalDB.hash(pw)) throw new Error('Wrong name or password');
     sessionStorage.setItem('sf_user',a.name); Acct.user={id:'local-'+a.name.toLowerCase(),name:a.name,wins:a.wins,losses:a.losses}; return;
   }
-  const {data,error}=await supa.auth.signInWithPassword({email:fakeEmail(name),password:pw});
-  if(error) throw new Error('Wrong name or password');
-  await loadProfile(data.user.id);
-  if(!Acct.user) throw new Error('No profile found for that account');
+  const {data,error}=await supa.rpc('log_in',{p_username:name,p_password:pw});
+  if(error) throw new Error(rpcErr(error));
+  setTok(data.token); setUser(data);
 }
 async function logOut(){
   const was=Acct.user;
   if(was&&was.guest){ try{ sessionStorage.removeItem('sf_guest'); }catch(_){} }
-  else if(Acct.mode==='local') sessionStorage.removeItem('sf_user'); else if(supa) await supa.auth.signOut();
+  else if(Acct.mode==='local') sessionStorage.removeItem('sf_user'); else { const t=getTok(); setTok(null); if(supa&&t){ try{ await supa.rpc('log_out',{p_token:t}); }catch(_){} } }
   Acct.user=null; renderAccount(); setMode('gate');
 }
 async function recordResult(won){
@@ -1861,14 +1861,14 @@ async function recordResult(won){
   if(u.guest){ if(won) u.wins++; else u.losses++; return; }      // guests: counted this session only, never saved
   if(won) u.wins++; else u.losses++;
   if(Acct.mode==='local'){ const k=u.name.toLowerCase(), r=LocalDB.all()[k]; if(r){ r.wins=u.wins; r.losses=u.losses; LocalDB.put(k,r);} return; }
-  try{ await supa.from('profiles').update({wins:u.wins,losses:u.losses}).eq('id',u.id); }catch(_){}
+  try{ const r=await supa.rpc('record_result',{p_token:getTok(),p_won:!!won}); if(r.data){ u.wins=r.data.wins; u.losses=r.data.losses; renderAccount(); } }catch(_){}
 }
 async function loadBoard(){
   const el=document.getElementById('boardList'); el.innerHTML='<div class="sub">LOADING...</div>';
   let rows=[];
   try{
     if(Acct.mode==='local') rows=Object.values(LocalDB.all()).map(a=>({username:a.name,wins:a.wins,losses:a.losses}));
-    else { const r=await supa.from('profiles').select('username,wins,losses').order('wins',{ascending:false}).limit(10); if(r.error) throw r.error; rows=r.data; }
+    else { const r=await supa.rpc('leaderboard'); if(r.error) throw new Error(rpcErr(r.error)); rows=r.data||[]; }
   }catch(e){ el.innerHTML='<div class="err">'+e.message+'</div>'; return; }
   rows.sort((a,b)=>b.wins-a.wins||a.losses-b.losses); rows=rows.slice(0,10);
   el.innerHTML=rows.length?rows.map((r,i)=>`<div class="brow${Acct.user&&r.username===Acct.user.name?' me':''}"><span>${i+1}. ${r.username}</span><span>${r.wins}W ${r.losses}L</span></div>`).join(''):'<div class="sub">NO PLAYERS YET. BE THE FIRST!</div>';
